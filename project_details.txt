@@ -1,0 +1,113 @@
+1. Project Overview
+Goal: Find images in a database that are most similar to a query image (e.g., a photo of a tiger should match other tiger photos).
+Approach:
+Use hashing (specifically, average hash or aHash) to quickly compare images based on overall color/brightness patterns. This is fast for large databases.
+Use ORB feature matching (from OpenCV) to refine the top candidates by looking at key points/features in the images (e.g., edges, corners).
+Combine the two for better accuracy.
+Why this works: Hashing gives a rough similarity score, while ORB handles cases where images are cropped, rotated, or have slight variations.
+Files Involved:
+build_index.py: Prepares the database (run once).
+search.py: Performs the search.
+utils.py: Helper functions for hashing and distances.
+stored_image: Your database of images.
+test_image: Query images.
+index: Generated files (hashes, paths, metadata).
+
+2. Step-by-Step Process: Building the Index (One-Time Setup)
+This happens when you run python3 build_index.py. It processes all images in the database and creates a searchable index.
+
+Step 2.1: Collect Images
+
+The script calls iter_images("image_database/stored_image") from utils.py.
+It walks through the folder recursively, finding all image files (based on extensions like .jpg, .png).
+Result: A list of image paths (e.g., 18 images in your case).
+
+Step 2.2: Compute Hashes for Each Image
+
+For each image path:
+Load the image using PIL (open_image_rgb in utils.py).
+Since max_side = None, no resizing happens—original resolution is kept.
+Compute the aHash (average hash) using imagehash.average_hash(img, hash_size=32).
+aHash divides the image into a 32x32 grid.
+For each cell, it checks if the brightness is above or below the average.
+This creates a 32x32 binary array (1024 bits total), representing the image's overall color pattern.
+Why aHash? It's simple and good for color-based similarity (e.g., two tigers with similar stripes/colors will have similar hashes).
+Convert the hash to a packed byte array (phash_packed_bytes in utils.py).
+The 1024 bits are packed into 128 bytes (uint8 array).
+This is efficient for storage and comparison.
+Store the packed hash and path for each image.
+Skip any images that fail (e.g., corrupted files).
+
+Step 2.3: Save the Index
+
+Save all packed hashes into hashes.npy (a NumPy array of shape (N, 128), where N is the number of images).
+Save paths into paths.jsonl (one JSON line per image, e.g., {"path": "/path/to/image.jpg"}).
+Save metadata into meta.json (e.g., hash size, number of images, max_side).
+Output: Confirmation of indexed images.
+What Happens Where:
+
+build_index.py: Main script.
+utils.py: iter_images, phash_packed_bytes (which calls imagehash.average_hash).
+
+3. Step-by-Step Process: Searching for Similar Images
+This happens when you run python3 search.py. It finds the most similar images to a query.
+
+Step 3.1: Load the Index and Query
+
+Load metadata from meta.json (e.g., hash size = 32).
+Load paths from paths.jsonl.
+Load hashes from hashes.npy (as a memory-mapped array for efficiency).
+Load the query image (e.g., lavender_garden.jpg).
+Compute the query's aHash the same way as in indexing (no resizing).
+
+Step 3.2: Compute Similarities (Hash-Based)
+
+Compare the query hash to all database hashes using Hamming distance (hamming_distances_packed in utils.py).
+Hamming distance: Count of differing bits between two hashes (lower = more similar).
+For 1024 bits, distance ranges from 0 (identical) to 1024 (completely different).
+Vectorized with NumPy for speed (compares all at once).
+Find the top K candidates (e.g., top 5) with the lowest distances.
+Use np.argpartition to efficiently get the smallest distances without sorting everything.
+Convert distances to similarity percentages: 100 * (1 - distance / 1024).
+
+Step 3.3: Rerank with ORB Features (Optional Refinement)
+
+Take the top candidates (e.g., top 5).
+For each candidate:
+Load the image with OpenCV (cv2.imread in grayscale).
+Detect ORB features (cv2.ORB_create with 3000 features).
+Compute descriptors (key points and their binary descriptions).
+Match features between query and candidate using cv2.BFMatcher with ratio test (keeps good matches where the best match is much better than the second-best).
+Score: Percentage of good matches relative to the smaller feature set (e.g., 50 good matches out of 100 = 50%).
+This refines the ranking for images with similar structures but different hashes.
+
+Step 3.4: Combine Scores and Rank
+
+For each result: Combined score = 70% hash similarity + 30% ORB score.
+Sort by combined score (descending).
+Return the top N results (e.g., top 5).
+Step 3.5: Output and Open Images
+
+Print the query path, top matches with scores, and paths.
+Attempt to open the query and top match using xdg-open.
+If it fails, print the paths for manual opening.
+What Happens Where:
+
+search.py: Main search logic (search function and run_search_with_defaults).
+utils.py: phash_packed_bytes, hamming_distances_packed.
+OpenCV (cv2): ORB feature detection/matching.
+
+4. Key Concepts and Why They Matter
+Hashing (aHash): A compact "fingerprint" of the image. Fast to compute and compare, but approximate (good for bulk search).
+Hamming Distance: Bit-wise comparison. Efficient for packed bytes.
+ORB: Computer vision feature matching. Slower but more precise for visual details.
+Combined Scoring: Balances speed (hash) with accuracy (ORB).
+No Resizing: Preserves details, but makes hashing sensitive to resolution/aspect ratio.
+Error Handling: Catches issues like missing images or viewer failures.
+5. Example Flow for Your Query (lavender_garden.jpg)
+Query hash computed.
+Distances calculated (e.g., lavender images have low distances).
+Top candidates reranked with ORB.
+Results: Lavender-related images ranked high (e.g., girl_in_lavender_garden.webp as top match).
+Images opened or paths printed.
+If something is unclear or you want to dive deeper into a specific part (e.g., how ORB works), let me know! You can also run the scripts with print statements to see intermediate values.
