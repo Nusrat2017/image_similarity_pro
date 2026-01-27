@@ -38,8 +38,4 @@ ENV/
 Thumbs.db
 
 # Project-specific
-index/
-image_database/
-test_image/
-.env
 *.log
