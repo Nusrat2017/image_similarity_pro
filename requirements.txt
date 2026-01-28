@@ -3,3 +3,5 @@ ImageHash>=4.3.1
 numpy>=1.23
 opencv-python>=4.13.0.90
 tqdm>=4.66
+torch>=2.0.0
+torchvision>=0.15.0
