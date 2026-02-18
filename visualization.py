@@ -3,6 +3,7 @@ Image Visualization Module
 Side-by-side comparison and difference display functions for the image search system.
 """
 
+import os
 import cv2
 import numpy as np
 
@@ -25,18 +26,61 @@ def show_side_by_side_comparison(query_image_path, match_image_path, similarity_
     if query_image is None or match_image is None:
         print(f"Error: Could not load images for comparison")
         return
+
+    def _shorten_label(text: str, max_chars: int = 28) -> str:
+        text = str(text)
+        if len(text) <= max_chars:
+            return text
+        return text[: max(0, max_chars - 1)] + "…"
+
+    def _put_bottom_right_label(img: np.ndarray, label: str, *, pad: int = 8) -> np.ndarray:
+        """Draw a readable label in the bottom-right corner of a BGR image."""
+        label = _shorten_label(label)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.55
+        thickness = 2
+        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+
+        h, w = img.shape[:2]
+        x2 = max(pad, w - pad)
+        y2 = max(pad, h - pad)
+        x1 = max(pad, x2 - tw - (pad * 2))
+        y1 = max(pad, y2 - th - baseline - (pad * 2))
+
+        # Background rectangle for contrast
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), -1)
+        # Text
+        cv2.putText(img, label, (x1 + pad, y2 - pad), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        return img
     
     # Set maximum display dimensions to fit on screen (adjust as needed)
+    # Keep the old vertical sizing behavior, but reduce horizontal overflow by
+    # constraining each of the 3 side-by-side panels to a max width.
     max_display_height = 800  # Maximum height for the comparison window
-    max_display_width = 1920  # Maximum total width for the comparison window
-    
-    # Resize both images to same dimensions for comparison
-    target_height = min(max(query_image.shape[0], match_image.shape[0]), max_display_height)
-    
-    # Calculate new widths maintaining aspect ratio
-    query_width = int(query_image.shape[1] * target_height / query_image.shape[0])
-    match_width = int(match_image.shape[1] * target_height / match_image.shape[0])
-    
+    max_display_width = 1400  # Maximum total width for the comparison window
+
+    divider_w = 5
+
+    # Choose a target height that keeps Query | Match | Heatmap within max_display_width.
+    # We keep aspect ratio for query/match by shrinking target_height if needed.
+    panel_w = max(1, (max_display_width - (2 * divider_w)) // 3)
+
+    def _height_limit(img, max_w: int) -> float:
+        h, w = img.shape[:2]
+        return (h * max_w) / max(1, w)
+
+    target_height = min(
+        max(query_image.shape[0], match_image.shape[0]),
+        max_display_height,
+        int(_height_limit(query_image, panel_w)),
+        int(_height_limit(match_image, panel_w)),
+    )
+    target_height = max(200, int(target_height))
+
+    # Calculate new widths maintaining aspect ratio at the chosen height
+    query_width = max(1, int(query_image.shape[1] * target_height / max(1, query_image.shape[0])))
+    match_width = max(1, int(match_image.shape[1] * target_height / max(1, match_image.shape[0])))
+
     # Resize images
     query_resized = cv2.resize(query_image, (query_width, target_height))
     match_resized = cv2.resize(match_image, (match_width, target_height))
@@ -85,30 +129,42 @@ def show_side_by_side_comparison(query_image_path, match_image_path, similarity_
         cv2.drawContours(query_highlighted, diff_contours, -1, (0, 0, 255), 2)
         cv2.drawContours(match_highlighted, diff_contours, -1, (0, 0, 255), 2)
         
-        # Resize difference panels to match display size
-        difference_heatmap_resized = cv2.resize(difference_heatmap, (query_width, target_height))
-        
+        # Resize difference panel to a fixed panel width (keeps total window width smaller)
+        difference_heatmap_resized = cv2.resize(difference_heatmap, (panel_w, target_height))
+
+        # Add filename labels at the bottom-right of each panel
+        _put_bottom_right_label(query_highlighted, os.path.basename(query_image_path))
+        _put_bottom_right_label(match_highlighted, os.path.basename(match_image_path))
+        _put_bottom_right_label(difference_heatmap_resized, "Differences")
+
         # Create white dividers
-        white_divider = np.ones((target_height, 5, 3), dtype=np.uint8) * 255
-        
+        white_divider = np.ones((target_height, divider_w, 3), dtype=np.uint8) * 255
+
         # Concatenate: Query | Match | Difference Heatmap
         side_by_side_comparison = np.hstack((
-            query_highlighted, white_divider, 
-            match_highlighted, white_divider,
-            difference_heatmap_resized
+            query_highlighted,
+            white_divider,
+            match_highlighted,
+            white_divider,
+            difference_heatmap_resized,
         ))
-        
+
         # Add text labels
         label_font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(side_by_side_comparison, "Query Image", (10, 30), label_font, 0.8, (255, 255, 255), 2)
         cv2.putText(side_by_side_comparison, "Best Match", (query_width + 15, 30), label_font, 0.8, (255, 255, 255), 2)
-        cv2.putText(side_by_side_comparison, "Differences (Hot)", (query_width * 2 + 25, 30), label_font, 0.8, (255, 255, 255), 2)
+        cv2.putText(side_by_side_comparison, "Differences (Hot)", (query_width + match_width + 25, 30), label_font, 0.8, (255, 255, 255), 2)
         cv2.putText(side_by_side_comparison, f"Similarity: {similarity_score:.1f}%", (10, target_height - 10), label_font, 0.8, (0, 255, 255), 2)
         cv2.putText(side_by_side_comparison, "Green=Match Red=Diff", (10, target_height - 40), label_font, 0.6, (255, 255, 255), 2)
         
     else:
         # For 100% match, just show side by side without difference map
-        white_divider = np.ones((target_height, 5, 3), dtype=np.uint8) * 255
+        white_divider = np.ones((target_height, divider_w, 3), dtype=np.uint8) * 255
+
+        # Add filename labels at the bottom-right of each panel
+        _put_bottom_right_label(query_resized, os.path.basename(query_image_path))
+        _put_bottom_right_label(match_resized, os.path.basename(match_image_path))
+
         side_by_side_comparison = np.hstack((query_resized, white_divider, match_resized))
         
         label_font = cv2.FONT_HERSHEY_SIMPLEX

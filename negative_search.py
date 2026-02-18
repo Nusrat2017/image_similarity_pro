@@ -3,6 +3,8 @@ Negative Search Detection Module
 Handles detection and display of no-match scenarios when query images don't exist in database.
 """
 
+import os
+
 import cv2
 import numpy as np
 
@@ -39,13 +41,47 @@ def display_console_warning(best_similarity_score):
     print(f"\nShowing closest matches anyway for reference:\n")
 
 
-def show_no_match_popup(best_similarity_score=0.0, query_image_path=""):
+def _format_file_size(num_bytes: int) -> str:
+    if num_bytes < 0:
+        return "unknown"
+    units = ["B", "KB", "MB", "GB"]
+    size = float(num_bytes)
+    unit = units[0]
+    for u in units:
+        unit = u
+        if size < 1024.0 or u == units[-1]:
+            break
+        size /= 1024.0
+    if unit == "B":
+        return f"{int(size)} {unit}"
+    return f"{size:.1f} {unit}"
+
+
+def _get_image_info(path: str) -> tuple[str, str]:
+    """Return (size_str, resolution_str) for an image path."""
+    try:
+        size_str = _format_file_size(os.path.getsize(path)) if path and os.path.exists(path) else "missing"
+    except Exception:
+        size_str = "unknown"
+
+    try:
+        img = cv2.imread(path)
+        if img is None:
+            return size_str, "unreadable"
+        h, w = img.shape[:2]
+        return size_str, f"{w}x{h}"
+    except Exception:
+        return size_str, "unknown"
+
+
+def show_no_match_popup(best_similarity_score=0.0, query_image_path="", match_image_path=""):
     """
     Display a visual warning popup when no good matches are found.
     
     Args:
         best_similarity_score: The best similarity score found (below threshold)
         query_image_path: Path to the query image
+        match_image_path: Path to the best match image (if available)
     """
     # Create a red warning image
     popup_window_width = 1200
@@ -66,10 +102,17 @@ def show_no_match_popup(best_similarity_score=0.0, query_image_path=""):
     cv2.putText(warning_popup_image, warning_title_text, (50, 80), text_font, 1.2, (255, 255, 255), 3)
     
     # Message lines
+    query_size, query_res = _get_image_info(query_image_path)
+    match_size, match_res = _get_image_info(match_image_path) if match_image_path else ("n/a", "n/a")
+
     warning_messages = [
         f"Best match similarity: {best_similarity_score:.1f}%",
         "",
         "This query image does NOT exist in the database.",
+        "",
+        "Image info:",
+        f"  - Query size: {query_size} | Query resolution: {query_res}",
+        f"  - Match size: {match_size} | Match resolution: {match_res}",
         "",
         "Possible reasons:",
         "  - Image was never indexed",
@@ -122,6 +165,7 @@ def handle_negative_search_result(search_results, query_image_path, similarity_t
         if search_results:
             print(f"⚠️  Displaying comparison with LOW similarity match ({best_similarity_score:.1f}%)")
             print(f"    This is likely NOT the same image!")
-            show_no_match_popup(best_similarity_score, query_image_path)
+            best_match_path = search_results[0].get("path", "")
+            show_no_match_popup(best_similarity_score, query_image_path, best_match_path)
     
     return is_negative_match

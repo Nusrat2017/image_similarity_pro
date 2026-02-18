@@ -143,6 +143,69 @@ def orb_rerank(query_path: str, candidate_paths: list[str], max_side: int = 1024
     results.sort(key=lambda x: x[1], reverse=True)
     return results
 
+
+def orb_rerank_with_info(
+    query_path: str,
+    candidate_paths: list[str],
+    max_side: int = 1024,
+    nfeatures: int = 5000,
+) -> tuple[list[tuple[str, float]], bool]:
+    """Like orb_rerank(), but also reports whether the query had usable ORB features.
+
+    For very small / low-detail query images ORB may produce zero keypoints.
+    In that case, returning a 0% ORB score for everything can incorrectly drag
+    down the combined similarity score. This helper lets the caller adapt the
+    weighting when ORB is not applicable.
+
+    Returns:
+        (results, query_has_features)
+    """
+    query_img = cv2.imread(query_path, cv2.IMREAD_GRAYSCALE)
+    if query_img is None:
+        raise ValueError(f"Cannot read query image: {query_path}")
+
+    if max_side and max(query_img.shape[:2]) > max_side:
+        scale = max_side / max(query_img.shape[:2])
+        query_img = cv2.resize(query_img, (int(query_img.shape[1] * scale), int(query_img.shape[0] * scale)))
+
+    detector = cv2.ORB_create(nfeatures=nfeatures, scaleFactor=1.2, nlevels=8, edgeThreshold=15, patchSize=31)
+    query_kp, query_desc = detector.detectAndCompute(query_img, None)
+    if query_desc is None or len(query_kp) == 0:
+        return ([(path, 0.0) for path in candidate_paths], False)
+
+    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+
+    results: list[tuple[str, float]] = []
+    for path in candidate_paths:
+        candidate = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if candidate is None:
+            results.append((path, 0.0))
+            continue
+
+        if max_side and max(candidate.shape[:2]) > max_side:
+            scale = max_side / max(candidate.shape[:2])
+            candidate = cv2.resize(candidate, (int(candidate.shape[1] * scale), int(candidate.shape[0] * scale)))
+
+        kp, desc = detector.detectAndCompute(candidate, None)
+        if desc is None or len(kp) == 0:
+            results.append((path, 0.0))
+            continue
+
+        all_matches = matcher.knnMatch(query_desc, desc, k=2)
+        good = []
+        for pair in all_matches:
+            if len(pair) == 2:
+                best, second = pair
+                if best.distance < 0.7 * second.distance:
+                    good.append(best)
+        min_count = max(1, min(len(query_desc), len(desc)))
+        score = (len(good) / min_count) * 100.0
+        score = float(max(0.0, min(100.0, score)))
+        results.append((path, score))
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    return (results, True)
+
 # =============================================================================
 # ALGORITHM 3: DEEP LEARNING (ResNet18)
 # Content-aware feature extraction using pre-trained neural network

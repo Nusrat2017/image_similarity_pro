@@ -16,6 +16,7 @@ from utils import (
     extract_deep_features,  # Extract deep learning features
     compare_deep_features,  # Compare deep features
     orb_rerank,  # Rerank using keypoint matching
+    orb_rerank_with_info,  # Rerank + report if ORB was applicable
     BIT_COUNT_LOOKUP_TABLE,  # Fast bit counting for hash comparison
 )
 
@@ -129,28 +130,31 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
         # This ensures every candidate gets a proper ORB score for accurate ranking
         paths_to_check = [m["path"] for m in matches]
         
-        # Detect and match keypoints between query and candidates
-        orb_results = orb_rerank(query_image, paths_to_check, max_side=1024, nfeatures=5000)
+        # Detect and match keypoints between query and candidates.
+        # For very small / low-detail query images ORB may have no usable keypoints.
+        orb_results, query_has_orb = orb_rerank_with_info(query_image, paths_to_check, max_side=1024, nfeatures=5000)
         orb_scores = {path: score for path, score in orb_results}
 
         # Add ORB scores to all matches
         for match in matches:
-            match["orb_score_pct"] = orb_scores.get(match["path"], 0.0)
+            match["orb_score_pct"] = orb_scores.get(match["path"], 0.0) if query_has_orb else None
 
         # =====================================================================
-        # FINAL SCORE CALCULATION - EQUAL WEIGHT ENSEMBLE
+        # FINAL SCORE CALCULATION
         # =====================================================================
-        # Combine all three algorithms with equal weight:
-        # - 33% Deep Learning (content/semantic similarity)
-        # - 33% pHash (structural similarity)
-        # - 33% ORB (geometric/keypoint similarity)
-        # This gives all three models equal influence on the final ranking
-        for match in matches:
-            match["combined_score"] = (
-                0.33 * match["deep_score_pct"] + 
-                0.33 * match["phash_similarity_pct"] + 
-                0.34 * match["orb_score_pct"]  # 0.34 to ensure sum = 1.0
-            )
+        # If ORB is applicable, use equal-weight 3-model ensemble.
+        # If ORB is NOT applicable (common for tiny images), do NOT punish the match
+        # with a forced 0% ORB score. Instead combine Deep+Hash only.
+        if query_has_orb:
+            for match in matches:
+                match["combined_score"] = (
+                    0.33 * match["deep_score_pct"]
+                    + 0.33 * match["phash_similarity_pct"]
+                    + 0.34 * float(match["orb_score_pct"] or 0.0)  # 0.34 so total = 1.0
+                )
+        else:
+            for match in matches:
+                match["combined_score"] = 0.5 * match["deep_score_pct"] + 0.5 * match["phash_similarity_pct"]
 
         # Sort all results by final combined score (highest first)
         matches.sort(key=lambda m: m["combined_score"], reverse=True)

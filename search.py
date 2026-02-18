@@ -9,6 +9,7 @@ from search_engine import search  # Import the core search function
 from utils import classify_image_content  # For image content analysis
 from visualization import show_side_by_side_comparison  # Image comparison display
 from negative_search import handle_negative_search_result  # Negative search detection
+from positive_search import handle_positive_search_result  # Positive search detection
 from build_index import needs_reindex, build_index  # Auto-indexing
 
 
@@ -88,8 +89,14 @@ def run_search_with_defaults():
     print(f"TOP MATCHING IMAGES:")
     print(f"{'='*70}")
     
+    similarity_threshold = 50.0
+
     # Check for negative search result (no good matches)
-    is_negative_match = handle_negative_search_result(results, query_path, similarity_threshold=50.0)
+    is_negative_match = handle_negative_search_result(results, query_path, similarity_threshold=similarity_threshold)
+
+    # If it IS a good match, show a green popup (similar to the red popup for negative search)
+    if not is_negative_match:
+        handle_positive_search_result(results, query_path, similarity_threshold=similarity_threshold)
     
     print(f"Top {len(results)} matches:")
     print(f"\nScore breakdown:")
@@ -105,8 +112,8 @@ def run_search_with_defaults():
         orb_text = f"{orb_score:5.1f}%" if orb_score is not None else " n/a "
         deep_text = f"{deep_score:5.1f}%"
         
-        # Highlight matches below 50% threshold
-        prefix = "❌ " if final_score < 50.0 else "   "
+        # Highlight results based on the 50% threshold
+        prefix = "✅ " if final_score >= similarity_threshold else "❌ "
         print(f"{prefix}{rank:02d}. Hash:{match['phash_similarity_pct']:5.1f}% Deep:{deep_text} ORB:{orb_text} => Combined:{final_score:5.1f}% | {match['path']}")
 
     # =========================================================================
