@@ -1,8 +1,0 @@
-{
-  "count": 110,
-  "hash_size": 32,
-  "bytes_per_hash": 128,
-  "db_folder": "C:\\Users\\ZONUASHA\\OneDrive - Carl Zeiss AG\\Documents\\image_compare\\image_database\\stored_image",
-  "max_side": null,
-  "deep_feature_dim": 512
-}

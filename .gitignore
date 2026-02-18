@@ -39,3 +39,6 @@ Thumbs.db
 
 # Project-specific
 *.log
+
+# Generated search index (rebuild locally)
+index/
