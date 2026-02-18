@@ -84,8 +84,8 @@ def show_no_match_popup(best_similarity_score=0.0, query_image_path="", match_im
         match_image_path: Path to the best match image (if available)
     """
     # Create a red warning image
-    popup_window_width = 1200
-    popup_window_height = 500
+    popup_window_width = 1600
+    popup_window_height = 650
     warning_popup_image = np.zeros((popup_window_height, popup_window_width, 3), dtype=np.uint8)
     
     # Red background for warning

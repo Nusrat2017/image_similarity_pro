@@ -151,9 +151,12 @@ def show_side_by_side_comparison(query_image_path, match_image_path, similarity_
 
         # Add text labels
         label_font = cv2.FONT_HERSHEY_SIMPLEX
+        query_panel_w = int(query_highlighted.shape[1])
+        match_panel_w = int(match_highlighted.shape[1])
+        heatmap_x0 = query_panel_w + divider_w + match_panel_w + divider_w
         cv2.putText(side_by_side_comparison, "Query Image", (10, 30), label_font, 0.8, (255, 255, 255), 2)
         cv2.putText(side_by_side_comparison, "Best Match", (query_width + 15, 30), label_font, 0.8, (255, 255, 255), 2)
-        cv2.putText(side_by_side_comparison, "Differences (Hot)", (query_width + match_width + 25, 30), label_font, 0.8, (255, 255, 255), 2)
+        cv2.putText(side_by_side_comparison, "Differences (Hot)", (heatmap_x0 + 10, 30), label_font, 0.8, (255, 255, 255), 2)
         cv2.putText(side_by_side_comparison, f"Similarity: {similarity_score:.1f}%", (10, target_height - 10), label_font, 0.8, (0, 255, 255), 2)
         cv2.putText(side_by_side_comparison, "Green=Match Red=Diff", (10, target_height - 40), label_font, 0.6, (255, 255, 255), 2)
         
@@ -169,7 +172,7 @@ def show_side_by_side_comparison(query_image_path, match_image_path, similarity_
         
         label_font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(side_by_side_comparison, "Query Image", (10, 30), label_font, 0.8, (0, 255, 0), 2)
-        cv2.putText(side_by_side_comparison, "Best Match - 100% Identical!", (query_width + 15, 30), label_font, 0.8, (0, 255, 0), 2)
+        cv2.putText(side_by_side_comparison, "Best Match - 100% Identical!", (query_width + divider_w + 15, 30), label_font, 0.8, (0, 255, 0), 2)
     
     # Scale down the final comparison if it's too wide to fit on screen
     comparison_height, comparison_width = side_by_side_comparison.shape[:2]
