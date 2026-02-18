@@ -1,129 +1,134 @@
+"""
+Simple Image Search Runner
+This is the main script you run to search for similar images.
+The actual search algorithms are in search_engine.py and utils.py
+"""
+
 import os
-import json
-import numpy as np
+from search_engine import search  # Import the core search function
+from utils import classify_image_content  # For image content analysis
+from visualization import show_side_by_side_comparison  # Image comparison display
+from negative_search import handle_negative_search_result  # Negative search detection
+from build_index import needs_reindex, build_index  # Auto-indexing
 
-from utils import (
-    phash_packed_bytes,
-    hamming_distances_packed,
-    dist_to_percent,
-    load_paths_jsonl,
-    extract_deep_features,
-    compare_deep_features,
-    orb_rerank,
-)
-
-def search(query: str, index_dir: str, top: int = 10, rerank: int = 50):
-    meta_path = os.path.join(index_dir, "meta.json")
-    paths_path = os.path.join(index_dir, "paths.jsonl")
-    hashes_path = os.path.join(index_dir, "hashes.npy")
-
-    with open(meta_path, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-
-    hash_size = int(meta["hash_size"])
-    max_side = meta.get("max_side", 1024)
-
-    paths = load_paths_jsonl(paths_path)
-    db_hashes = np.load(hashes_path, mmap_mode="r")
-
-    qhash = phash_packed_bytes(query, hash_size=hash_size, max_side=max_side)
-    dists = hamming_distances_packed(qhash, db_hashes)
-
-    k = max(top, rerank if rerank else top)
-    k = min(k, len(dists))
-
-    idx = np.argpartition(dists, kth=k - 1)[:k]
-    idx = idx[np.argsort(dists[idx])]
-
-    results = []
-    for i in idx:
-        dist = int(dists[i])
-        results.append({
-            "path": paths[int(i)],
-            "phash_distance_bits": dist,
-            "phash_similarity_pct": dist_to_percent(dist, hash_size),
-        })
-
-    if rerank and len(results) > 0:
-        cand = results[:rerank]
-        cand_paths = [r["path"] for r in cand]
-        orb_scored = orb_rerank(query, cand_paths, max_side=1024, nfeatures=5000)
-        orb_map = {p: s for p, s in orb_scored}
-
-        for r in results:
-            r["orb_score_pct"] = orb_map.get(r["path"], 0.0)
-
-        # Add deep learning feature comparison
-        try:
-            print("Extracting deep learning features...")
-            query_features = extract_deep_features(query)
-            for r in results[:rerank]:
-                try:
-                    img_features = extract_deep_features(r["path"])
-                    r["deep_score_pct"] = compare_deep_features(query_features, img_features)
-                except:
-                    r["deep_score_pct"] = 0.0
-        except Exception as e:
-            print(f"Deep learning feature extraction failed: {e}")
-            for r in results[:rerank]:
-                r["deep_score_pct"] = 0.0
-
-        # Combine scores: 25% pHash, 20% ORB, 55% Deep Learning (content-aware)
-        for r in results[:rerank]:
-            deep_score = r.get("deep_score_pct", 0.0)  
-            r["combined_score"] = 0.25 * r["phash_similarity_pct"] + 0.2 * r["orb_score_pct"] + 0.55 * deep_score
-        
-        # For non-reranked items, use just pHash score
-        for r in results[rerank:]:
-            r["deep_score_pct"] = 0.0
-            r["combined_score"] = r["phash_similarity_pct"]
-
-        # Sort all results by combined score (highest first)
-        results.sort(key=lambda r: r["combined_score"], reverse=True)
-    else:
-        for r in results:
-            r["orb_score_pct"] = None
-            r["deep_score_pct"] = 0.0
-            r["combined_score"] = r["phash_similarity_pct"]
-
-        results.sort(key=lambda r: r["phash_similarity_pct"], reverse=True)
-
-    return results[:top]
 
 def run_search_with_defaults():
-    query_image_path = "test_image/asha2-50R-Fade.png"  # Specify your query image path here
-    index_dir = "index"  # Specify your index directory here
-    top_results = 5  # Number of top results to return
-    rerank_candidates = 20  # Number of candidates to rerank with ORB
+    """
+    Main function to run an image search with default settings.
+    Modify these values to search for different images or adjust search behavior.
+    """
+    # =========================================================================
+    # SEARCH SETTINGS - Change these to customize your search
+    # =========================================================================
+    query_path = "test_image/human_ear.jpg"  # Which image to search for
+    index_folder = "index"  # Where the index files are stored
+    limit = 10  # How many results to show
+    filter_size = 100  # How many candidates to check in Stage 1 (higher = more thorough)
+    
+    # =========================================================================
+    # STEP 0: Auto-indexing - Check if index needs to be updated
+    # =========================================================================
+    source_folder = "image_database/stored_image"
+    needs_update, changes = needs_reindex(source_folder, index_folder)
+    
+    if needs_update:
+        print(f"\n{'='*70}")
+        if 'reason' in changes:
+            print(f"🔄 INDEXING REQUIRED: {changes['reason']}")
+        else:
+            messages = []
+            if changes['new'] > 0:
+                messages.append(f"📥 {changes['new']} new image(s) added")
+            if changes['renamed'] > 0:
+                messages.append(f"📝 {changes['renamed']} image(s) renamed")
+            if changes['deleted'] > 0 and changes['renamed'] == 0:
+                messages.append(f"🗑️  {changes['deleted']} image(s) deleted")
+            print(f"🔄 INDEXING REQUIRED:")
+            for msg in messages:
+                print(f"   {msg}")
+        print(f"{'='*70}")
+        build_index(source_folder, index_folder, hash_size=32, max_size=None)
+        print(f"{'='*70}")
+        print(f"✅ INDEXING COMPLETED - Ready to search")
+        print(f"{'='*70}\n")
+    else:
+        print(f"\n{'='*70}")
+        print(f"✅ INDEX UP TO DATE - {changes['reason']}")
+        print(f"{'='*70}\n")
 
-    res = search(query_image_path, index_dir, top=top_results, rerank=rerank_candidates)
+    # =========================================================================
+    # STEP 1: Analyze what's in the query image
+    # =========================================================================
+    # Identify the content (e.g., "eyes", "animal", "flower")
+    # This helps understand what the deep learning model is looking for
+    print(f"\n{'='*70}")
+    print(f"QUERY IMAGE CONTENT ANALYSIS:")
+    print(f"{'='*70}")
+    try:
+        # Get top 5 predictions about what's in the image
+        predictions = classify_image_content(query_path, top_k=5)
+        print(f"Query image: {os.path.abspath(query_path)}")
+        print(f"\nDetected content:")
+        for i, (label, confidence) in enumerate(predictions, 1):
+            print(f"  {i}. {label.replace('_', ' ').title()}: {confidence:.1f}%")
+    except Exception as e:
+        print(f"Could not classify image: {e}")
+    print(f"{'='*70}\n")
 
-    # show top 5 match
-    print(f"Query: {os.path.abspath(query_image_path)}")
-    print(f"Top {len(res)} matches:")
-    for n, r in enumerate(res, 1):
-        orb = r["orb_score_pct"]
-        deep = r.get("deep_score_pct", 0.0)
-        combined = r["combined_score"]
-        orb_str = f"{orb:5.1f}%" if orb is not None else " n/a "
-        deep_str = f"{deep:5.1f}%"
-        print(f"{n:02d}. Hash:{r['phash_similarity_pct']:5.1f}% Deep:{deep_str} ORB:{orb_str} => Combined:{combined:5.1f}% | {r['path']}")
+    # =========================================================================
+    # STEP 2: Run the 3-stage search pipeline
+    # =========================================================================
+    results = search(query_path, index_folder, num_results=limit, candidates=filter_size)
+    # this search function is from search_engine.py
 
-    # Open the query image and the top match
-    if res:
-        import subprocess
-        import sys
-        try:
-            if sys.platform == "win32":
-                subprocess.run(["cmd", "/c", "start", "", query_image_path], check=True)
-                subprocess.run(["cmd", "/c", "start", "", res[0]['path']], check=True)
-            else:
-                subprocess.run(["xdg-open", query_image_path], check=True)
-                subprocess.run(["xdg-open", res[0]['path']], check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("Could not open images automatically. Please open them manually:")
-            print(f"Query image: {os.path.abspath(query_image_path)}")
-            print(f"Top match: {os.path.abspath(res[0]['path'])}")
+    # =========================================================================
+    # STEP 3: Display results with all scores
+    # =========================================================================
+    print(f"\n{'='*70}")
+    print(f"TOP MATCHING IMAGES:")
+    print(f"{'='*70}")
+    
+    # Check for negative search result (no good matches)
+    is_negative_match = handle_negative_search_result(results, query_path, similarity_threshold=50.0)
+    
+    print(f"Top {len(results)} matches:")
+    print(f"\nScore breakdown:")
+    print(f"  - Deep: Content similarity from neural network")
+    print(f"  - Hash: Perceptual hash similarity (structure)")
+    print(f"  - ORB: Keypoint matching (geometric similarity)")
+    print(f"  - Combined: Final score (33% each)\n")
+    
+    for rank, match in enumerate(results, 1):
+        orb_score = match["orb_score_pct"]
+        deep_score = match.get("deep_score_pct", 0.0)
+        final_score = match["combined_score"]
+        orb_text = f"{orb_score:5.1f}%" if orb_score is not None else " n/a "
+        deep_text = f"{deep_score:5.1f}%"
+        
+        # Highlight matches below 50% threshold
+        prefix = "❌ " if final_score < 50.0 else "   "
+        print(f"{prefix}{rank:02d}. Hash:{match['phash_similarity_pct']:5.1f}% Deep:{deep_text} ORB:{orb_text} => Combined:{final_score:5.1f}% | {match['path']}")
 
+    # =========================================================================
+    # STEP 4: Show side-by-side comparison of query and best match
+    # =========================================================================
+    if results:
+        print(f"\n{'='*70}")
+        print(f"VISUAL COMPARISON:")
+        print(f"{'='*70}")
+        
+        # Get similarity score from best match
+        best_match_score = results[0]['combined_score']
+        
+        # Display message
+        if not is_negative_match:
+            print(f"Displaying query image vs. best match side by side...")
+        
+        # Display side-by-side comparison using OpenCV with difference visualization
+        show_side_by_side_comparison(query_path, results[0]['path'], 
+                                     similarity_score=best_match_score,
+                                     title="Query vs Best Match")
+
+# Entry point: Run the search when this script is executed directly
 if __name__ == "__main__":
     run_search_with_defaults()

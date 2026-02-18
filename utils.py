@@ -63,26 +63,26 @@ def save_paths_jsonl(paths_file: str, paths: list[str]):
 # Precompute bit count for bytes 0..255 (fast Hamming distance for packed uint8 arrays)
 BIT_COUNT_LOOKUP_TABLE = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 
-def phash_packed_bytes(path: str, hash_size: int = 16, max_side: int | None = None) -> np.ndarray:
+def phash_packed_bytes(image_path: str, hash_size: int = 16, max_side: int | None = None) -> np.ndarray:
     """Return packed bytes of pHash.
     Output shape: (hash_size*hash_size/8,) uint8.
     For hash_size=16 => 256 bits => 32 bytes.
     """
-    img = open_image_rgb(path)
+    img = open_image_rgb(image_path)
     img = resize_max_side(img, max_side)
-    image_hash = imagehash.average_hash(img, hash_size=hash_size)  # Average hash - works better for color images
-    hash_bits = np.asarray(image_hash.hash, dtype=np.uint8).reshape(-1)  # 0/1
-    packed_bytes = np.packbits(hash_bits)  # uint8
-    return packed_bytes
+    img_hash = imagehash.average_hash(img, hash_size=hash_size)  # Average hash - works better for color images
+    bits = np.asarray(img_hash.hash, dtype=np.uint8).reshape(-1)  # 0/1
+    packed = np.packbits(bits)  # uint8
+    return packed
 
-def hamming_distances_packed(query_packed: np.ndarray, db_packed: np.ndarray) -> np.ndarray:
+def hamming_distances_packed(query_hash: np.ndarray, stored_hashes: np.ndarray) -> np.ndarray:
     """Vectorized Hamming distance for packed uint8 hashes.
-    query_packed: (B,)
-    db_packed:    (N,B)
+    query_hash: (B,)
+    stored_hashes:    (N,B)
     returns: (N,) bit distances
     """
-    xor_result = np.bitwise_xor(db_packed, query_packed)  # (N,B)
-    return BIT_COUNT_LOOKUP_TABLE[xor_result].sum(axis=1).astype(np.int32)
+    diff = np.bitwise_xor(stored_hashes, query_hash)  # (N,B)
+    return BIT_COUNT_LOOKUP_TABLE[diff].sum(axis=1).astype(np.int32)
 
 def dist_to_percent(dist_bits: int, hash_size: int) -> float:
     """Convert bit distance to similarity percentage."""
@@ -97,51 +97,51 @@ def dist_to_percent(dist_bits: int, hash_size: int) -> float:
 
 def orb_rerank(query_path: str, candidate_paths: list[str], max_side: int = 1024, nfeatures: int = 5000) -> list[tuple[str, float]]:
     """Rerank candidate images using ORB feature matching."""
-    query_image = cv2.imread(query_path, cv2.IMREAD_GRAYSCALE)
-    if query_image is None:
+    query_img = cv2.imread(query_path, cv2.IMREAD_GRAYSCALE)
+    if query_img is None:
         raise ValueError(f"Cannot read query image: {query_path}")
 
-    if max_side and max(query_image.shape[:2]) > max_side:
-        scale = max_side / max(query_image.shape[:2])
-        query_image = cv2.resize(query_image, (int(query_image.shape[1] * scale), int(query_image.shape[0] * scale)))
+    if max_side and max(query_img.shape[:2]) > max_side:
+        scale = max_side / max(query_img.shape[:2])
+        query_img = cv2.resize(query_img, (int(query_img.shape[1] * scale), int(query_img.shape[0] * scale)))
 
-    orb_detector = cv2.ORB_create(nfeatures=nfeatures, scaleFactor=1.2, nlevels=8, edgeThreshold=15, patchSize=31)
-    query_keypoints, query_descriptors = orb_detector.detectAndCompute(query_image, None)
-    if query_descriptors is None or len(query_keypoints) == 0:
-        return [(image_path, 0.0) for image_path in candidate_paths]
+    detector = cv2.ORB_create(nfeatures=nfeatures, scaleFactor=1.2, nlevels=8, edgeThreshold=15, patchSize=31)
+    query_kp, query_desc = detector.detectAndCompute(query_img, None)
+    if query_desc is None or len(query_kp) == 0:
+        return [(path, 0.0) for path in candidate_paths]
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
 
-    scored_results: list[tuple[str, float]] = []
-    for image_path in candidate_paths:
-        candidate_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        if candidate_image is None:
-            scored_results.append((image_path, 0.0))
+    results: list[tuple[str, float]] = []
+    for path in candidate_paths:
+        candidate = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if candidate is None:
+            results.append((path, 0.0))
             continue
 
-        if max_side and max(candidate_image.shape[:2]) > max_side:
-            scale = max_side / max(candidate_image.shape[:2])
-            candidate_image = cv2.resize(candidate_image, (int(candidate_image.shape[1] * scale), int(candidate_image.shape[0] * scale)))
+        if max_side and max(candidate.shape[:2]) > max_side:
+            scale = max_side / max(candidate.shape[:2])
+            candidate = cv2.resize(candidate, (int(candidate.shape[1] * scale), int(candidate.shape[0] * scale)))
 
-        keypoints, descriptors = orb_detector.detectAndCompute(candidate_image, None)
-        if descriptors is None or len(keypoints) == 0:
-            scored_results.append((image_path, 0.0))
+        kp, desc = detector.detectAndCompute(candidate, None)
+        if desc is None or len(kp) == 0:
+            results.append((path, 0.0))
             continue
 
-        matches = matcher.knnMatch(query_descriptors, descriptors, k=2)
-        good_matches = []
-        for match_pair in matches:
-            if len(match_pair) == 2:
-                best_match, second_best_match = match_pair
-                if best_match.distance < 0.7 * second_best_match.distance:
-                    good_matches.append(best_match)
-        min_features_count = max(1, min(len(query_descriptors), len(descriptors)))
-        similarity_score = (len(good_matches) / min_features_count) * 100.0
-        similarity_score = float(max(0.0, min(100.0, similarity_score)))
-        scored_results.append((image_path, similarity_score))
+        all_matches = matcher.knnMatch(query_desc, desc, k=2)
+        good = []
+        for pair in all_matches:
+            if len(pair) == 2:
+                best, second = pair
+                if best.distance < 0.7 * second.distance:
+                    good.append(best)
+        min_count = max(1, min(len(query_desc), len(desc)))
+        score = (len(good) / min_count) * 100.0
+        score = float(max(0.0, min(100.0, score)))
+        results.append((path, score))
 
-    scored_results.sort(key=lambda x: x[1], reverse=True)
-    return scored_results
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results
 
 # =============================================================================
 # ALGORITHM 3: DEEP LEARNING (ResNet18)
@@ -151,20 +151,24 @@ def orb_rerank(query_path: str, candidate_paths: list[str], max_side: int = 1024
 
 # Global model for deep learning features (lazy loaded)
 _deep_model = None
+_deep_model_full = None  # Full model with classification head
 _deep_transform = None
 
 def get_deep_learning_model():
     """Get or initialize the ResNet model for feature extraction."""
-    global _deep_model, _deep_transform
+    global _deep_model, _deep_model_full, _deep_transform
     if _deep_model is None:
         # Disable SSL verification for model download
         import ssl
         ssl._create_default_https_context = ssl._create_unverified_context
         
         # Use ResNet18 pre-trained on ImageNet
-        _deep_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        full_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        _deep_model_full = full_model  # Keep full model for classification
+        _deep_model_full.eval()
+        
         # Remove the final classification layer to get features
-        _deep_model = torch.nn.Sequential(*list(_deep_model.children())[:-1])
+        _deep_model = torch.nn.Sequential(*list(full_model.children())[:-1])
         _deep_model.eval()
         
         # Standard ImageNet preprocessing
@@ -176,24 +180,61 @@ def get_deep_learning_model():
         ])
     return _deep_model, _deep_transform
 
-def extract_deep_features(path: str) -> np.ndarray:
+def extract_deep_features(image_path: str) -> np.ndarray:
     """Extract deep learning features from an image using ResNet."""
     model, transform = get_deep_learning_model()
-    img = open_image_rgb(path)
-    img_tensor = transform(img).unsqueeze(0)  # Add batch dimension
+    img = open_image_rgb(image_path)
+    tensor = transform(img).unsqueeze(0)  # Add batch dimension
     
     with torch.no_grad():
-        features = model(img_tensor)
+        output = model(tensor)
     
     # Flatten to 1D array
-    features = features.squeeze().numpy()
+    vector = output.squeeze().numpy()
     # Normalize
-    features = features / (np.linalg.norm(features) + 1e-7)
-    return features
+    normalized = vector / (np.linalg.norm(vector) + 1e-7)
+    return normalized
 
-def compare_deep_features(features1: np.ndarray, features2: np.ndarray) -> float:
+def compare_deep_features(vec1: np.ndarray, vec2: np.ndarray) -> float:
     """Compare deep features using cosine similarity. Returns similarity 0-100%."""
-    cosine_similarity = np.dot(features1, features2) / (np.linalg.norm(features1) * np.linalg.norm(features2) + 1e-7)
+    similarity = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-7)
     # Convert from [-1, 1] to [0, 100]
-    similarity_percentage = ((cosine_similarity + 1) / 2) * 100
-    return max(0.0, min(100.0, similarity_percentage))
+    percentage = ((similarity + 1) / 2) * 100
+    return max(0.0, min(100.0, percentage))
+
+def classify_image_content(image_path: str, top_k: int = 5) -> list[tuple[str, float]]:
+    """Classify image content using ResNet18 pre-trained on ImageNet.
+    
+    Returns top_k predictions as list of (label, confidence_percentage) tuples.
+    Example: [('golden_retriever', 85.2), ('Labrador_retriever', 8.3), ...]
+    """
+    global _deep_model_full, _deep_transform
+    
+    # Initialize model if needed
+    if _deep_model_full is None:
+        get_deep_learning_model()
+    
+    # Load and preprocess image
+    img = open_image_rgb(image_path)
+    tensor = _deep_transform(img).unsqueeze(0)  # Add batch dimension
+    
+    # Get predictions
+    with torch.no_grad():
+        logits = _deep_model_full(tensor)
+        probs = torch.nn.functional.softmax(logits[0], dim=0)
+    
+    # Get top k predictions
+    top_probs, top_idx = torch.topk(probs, top_k)
+    
+    # Get ImageNet class labels
+    weights = models.ResNet18_Weights.IMAGENET1K_V1
+    labels = weights.meta["categories"]
+    
+    predictions = []
+    for i in range(top_k):
+        idx = top_idx[i].item()
+        conf = top_probs[i].item() * 100
+        name = labels[idx]
+        predictions.append((name, conf))
+    
+    return predictions
