@@ -1,113 +1,141 @@
 1. Project Overview
-Goal: Find images in a database that are most similar to a query image (e.g., a photo of a tiger should match other tiger photos).
-Approach:
-Use hashing (specifically, average hash or aHash) to quickly compare images based on overall color/brightness patterns. This is fast for large databases.
-Use ORB feature matching (from OpenCV) to refine the top candidates by looking at key points/features in the images (e.g., edges, corners).
-Combine the two for better accuracy.
-Why this works: Hashing gives a rough similarity score, while ORB handles cases where images are cropped, rotated, or have slight variations.
-Files Involved:
-build_index.py: Prepares the database (run once).
-search.py: Performs the search.
-utils.py: Helper functions for hashing and distances.
-stored_image: Your database of images.
-test_image: Query images.
-index: Generated files (hashes, paths, metadata).
+Goal: Find the images in a database that are most similar to a query image.
 
-2. Step-by-Step Process: Building the Index (One-Time Setup)
-This happens when you run python3 build_index.py. It processes all images in the database and creates a searchable index.
+Current approach (3-stage ensemble pipeline):
+Stage 1 — Deep Learning (content/semantic similarity)
+	- Uses a pre-trained ResNet18 model to extract a feature vector per image.
+	- Filters the database down to the most content-similar candidates.
 
-Step 2.1: Collect Images
+Stage 2 — Perceptual Hash (fast structural similarity)
+	- Uses average hash (aHash) packed into bytes.
+	- Computes Hamming distance only on the Stage-1 candidates.
 
-The script calls iter_images("image_database/stored_image") from utils.py.
-It walks through the folder recursively, finding all image files (based on extensions like .jpg, .png).
-Result: A list of image paths (e.g., 18 images in your case).
+Stage 3 — ORB (keypoint/geometric similarity)
+	- Uses OpenCV ORB + BFMatcher + ratio test.
+	- Adds a geometry-based score and improves robustness to rotation/crop.
 
-Step 2.2: Compute Hashes for Each Image
+Final ranking:
+	- Combined score = ~33% Deep + ~33% Hash + ~34% ORB
 
-For each image path:
-Load the image using PIL (open_image_rgb in utils.py).
-Since max_side = None, no resizing happens—original resolution is kept.
-Compute the aHash (average hash) using imagehash.average_hash(img, hash_size=32).
-aHash divides the image into a 32x32 grid.
-For each cell, it checks if the brightness is above or below the average.
-This creates a 32x32 binary array (1024 bits total), representing the image's overall color pattern.
-Why aHash? It's simple and good for color-based similarity (e.g., two tigers with similar stripes/colors will have similar hashes).
-Convert the hash to a packed byte array (phash_packed_bytes in utils.py).
-The 1024 bits are packed into 128 bytes (uint8 array).
-This is efficient for storage and comparison.
-Store the packed hash and path for each image.
-Skip any images that fail (e.g., corrupted files).
+Why this works:
+	- Deep features capture “what” is in the image.
+	- Hash captures global structure quickly.
+	- ORB captures local geometry and keypoint matches.
 
-Step 2.3: Save the Index
+Key scripts / modules:
+	- build_index.py      → builds/updates the index files
+	- search.py           → main entry point to run a search (includes auto-indexing)
+	- search_engine.py    → core 3-stage search pipeline and scoring
+	- utils.py            → feature extraction + hashing + ORB utilities
+	- negative_search.py  → detects “no good match” and shows warning popup
+	- visualization.py    → side-by-side comparison + difference heatmap
 
-Save all packed hashes into hashes.npy (a NumPy array of shape (N, 128), where N is the number of images).
-Save paths into paths.jsonl (one JSON line per image, e.g., {"path": "/path/to/image.jpg"}).
-Save metadata into meta.json (e.g., hash size, number of images, max_side).
-Output: Confirmation of indexed images.
-What Happens Where:
+Data folders:
+	- image_database/stored_image/  → image database
+	- test_image/                   → query images
+	- index/                        → generated index artifacts
 
-build_index.py: Main script.
-utils.py: iter_images, phash_packed_bytes (which calls imagehash.average_hash).
 
-3. Step-by-Step Process: Searching for Similar Images
-This happens when you run python3 search.py. It finds the most similar images to a query.
+2. Indexing: Building / Updating the Index
+Indexing happens when you run build_index.py (or automatically from search.py).
 
-Step 3.1: Load the Index and Query
+2.1 Collect image files
+	- utils.iter_images(folder) walks the database recursively and returns supported image files.
 
-Load metadata from meta.json (e.g., hash size = 32).
-Load paths from paths.jsonl.
-Load hashes from hashes.npy (as a memory-mapped array for efficiency).
-Load the query image (e.g., lavender_garden.jpg).
-Compute the query's aHash the same way as in indexing (no resizing).
+2.2 Smart incremental indexing (rename-aware)
+	- If index files already exist, build_index.py loads:
+			- index/paths.jsonl
+			- index/hashes.npy
+			- index/deep_features.npy
+	- For each current image:
+			- If the absolute path is already in paths.jsonl → reuse stored hash + deep features.
+			- Else, compute the hash and compare to existing hashes → if identical, treat as rename and reuse features.
+			- Else, treat as a new image → compute deep features + hash.
+	- Images missing from the folder are implicitly removed from the rebuilt index.
 
-Step 3.2: Compute Similarities (Hash-Based)
+2.3 Feature extraction details
+	A) Hash features (utils.phash_packed_bytes)
+		 - Uses PIL to open image and (optionally) resize.
+		 - Uses imagehash.average_hash(img, hash_size=...).
+		 - Packs bits into uint8 bytes using np.packbits (fast Hamming comparisons).
 
-Compare the query hash to all database hashes using Hamming distance (hamming_distances_packed in utils.py).
-Hamming distance: Count of differing bits between two hashes (lower = more similar).
-For 1024 bits, distance ranges from 0 (identical) to 1024 (completely different).
-Vectorized with NumPy for speed (compares all at once).
-Find the top K candidates (e.g., top 5) with the lowest distances.
-Use np.argpartition to efficiently get the smallest distances without sorting everything.
-Convert distances to similarity percentages: 100 * (1 - distance / 1024).
+	B) Deep features (utils.extract_deep_features)
+		 - Uses torchvision ResNet18 (ImageNet weights).
+		 - Removes the final classification layer to get an embedding.
+		 - Normalizes the vector so cosine similarity is just a dot product.
 
-Step 3.3: Rerank with ORB Features (Optional Refinement)
+2.4 Index outputs (index/ folder)
+	- paths.jsonl         → one JSON object per line: {"path": "..."}
+	- hashes.npy          → (N, B) uint8 packed hashes
+	- deep_features.npy   → (N, 512) float32 deep embeddings (ResNet18)
+	- meta.json           → index configuration (count, hash_size, max_side, etc.)
+	- backup.jsonl        → optional extra output (if present in your workspace)
 
-Take the top candidates (e.g., top 5).
-For each candidate:
-Load the image with OpenCV (cv2.imread in grayscale).
-Detect ORB features (cv2.ORB_create with 3000 features).
-Compute descriptors (key points and their binary descriptions).
-Match features between query and candidate using cv2.BFMatcher with ratio test (keeps good matches where the best match is much better than the second-best).
-Score: Percentage of good matches relative to the smaller feature set (e.g., 50 good matches out of 100 = 50%).
-This refines the ranking for images with similar structures but different hashes.
 
-Step 3.4: Combine Scores and Rank
+3. Searching: Running a Query
+Searching is typically run via search.py.
 
-For each result: Combined score = 70% hash similarity + 30% ORB score.
-Sort by combined score (descending).
-Return the top N results (e.g., top 5).
-Step 3.5: Output and Open Images
+3.0 Auto-indexing (search.py)
+	- search.py calls build_index.needs_reindex(db_folder, index_folder).
+	- If new/deleted/renamed images are detected, it rebuilds the index before searching.
 
-Print the query path, top matches with scores, and paths.
-Attempt to open the query and top match using xdg-open.
-If it fails, print the paths for manual opening.
-What Happens Where:
+3.1 Query content analysis (optional, informational)
+	- search.py calls utils.classify_image_content(query_path, top_k=5).
+	- Prints the top ImageNet labels and confidence.
+	- This does not affect ranking; it helps interpret what the model “sees”.
 
-search.py: Main search logic (search function and run_search_with_defaults).
-utils.py: phash_packed_bytes, hamming_distances_packed.
-OpenCV (cv2): ORB feature detection/matching.
+3.2 Stage 1 — Deep learning content filtering (search_engine.py)
+	- Loads index/deep_features.npy as a memory-mapped array.
+	- Extracts deep features for the query.
+	- Computes cosine similarity via dot product against all stored features.
+	- Keeps the top K candidates (candidates parameter, default ~100).
 
-4. Key Concepts and Why They Matter
-Hashing (aHash): A compact "fingerprint" of the image. Fast to compute and compare, but approximate (good for bulk search).
-Hamming Distance: Bit-wise comparison. Efficient for packed bytes.
-ORB: Computer vision feature matching. Slower but more precise for visual details.
-Combined Scoring: Balances speed (hash) with accuracy (ORB).
-No Resizing: Preserves details, but makes hashing sensitive to resolution/aspect ratio.
-Error Handling: Catches issues like missing images or viewer failures.
-5. Example Flow for Your Query (lavender_garden.jpg)
-Query hash computed.
-Distances calculated (e.g., lavender images have low distances).
-Top candidates reranked with ORB.
-Results: Lavender-related images ranked high (e.g., girl_in_lavender_garden.webp as top match).
-Images opened or paths printed.
-If something is unclear or you want to dive deeper into a specific part (e.g., how ORB works), let me know! You can also run the scripts with print statements to see intermediate values.
+3.3 Stage 2 — Hash refinement on candidates
+	- Computes query hash.
+	- For each candidate, computes packed-byte Hamming distance using a fast bit-count lookup table.
+	- Converts distance to a similarity percentage.
+
+3.4 Stage 3 — ORB scoring on candidates
+	- Runs ORB matching between query and each candidate.
+	- Produces orb_score_pct per candidate.
+
+3.5 Final combined score and ranking
+	- combined_score = 0.33*deep_score_pct + 0.33*phash_similarity_pct + 0.34*orb_score_pct
+	- Results are sorted descending by combined_score.
+
+
+4. Negative Search (No-Match Detection)
+Implemented in negative_search.py.
+
+What it does:
+	- If the best combined_score is below a threshold (default 50%), it flags a “negative match”.
+	- Prints a console warning.
+	- Optionally shows a red OpenCV popup explaining that the query likely does not exist in the database.
+
+
+5. Visualization: Side-by-side + Difference Heatmap
+Implemented in visualization.py.
+
+What it shows:
+	- Query image and best match side by side.
+	- If similarity < 100%, it also shows a difference heatmap.
+	- Matching areas are tinted green, differences outlined in red.
+
+
+6. Typical Usage
+1) Build/update index (manual):
+	 - python build_index.py
+
+2) Run a search (auto-indexing + scoring + visualization):
+	 - python search.py
+
+To change the query image, edit the variables near the top of search.py:
+	- query_path
+	- limit
+	- filter_size
+
+
+7. Notes / Practical Considerations
+- The index/ folder contains large generated files (especially deep_features.npy). If you want smaller Git commits, consider ignoring index/ and rebuilding locally.
+- Deep feature extraction may download ResNet18 weights the first time (requires internet unless already cached).
+- OpenCV GUI windows (cv2.imshow) require a desktop session; they won’t display in headless environments.
