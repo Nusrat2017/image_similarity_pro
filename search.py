@@ -70,7 +70,7 @@ def search(query: str, index_dir: str, top: int = 10, rerank: int = 50):
 
         # Combine scores: 25% pHash, 20% ORB, 55% Deep Learning (content-aware)
         for r in results[:rerank]:
-            deep_score = r.get("deep_score_pct", 0.0)
+            deep_score = r.get("deep_score_pct", 0.0)  
             r["combined_score"] = 0.25 * r["phash_similarity_pct"] + 0.2 * r["orb_score_pct"] + 0.55 * deep_score
         
         # For non-reranked items, use just pHash score
@@ -91,7 +91,7 @@ def search(query: str, index_dir: str, top: int = 10, rerank: int = 50):
     return results[:top]
 
 def run_search_with_defaults():
-    query_image_path = "test_image/sclera.png"  # Specify your query image path here
+    query_image_path = "test_image/asha2-50R-Fade.png"  # Specify your query image path here
     index_dir = "index"  # Specify your index directory here
     top_results = 5  # Number of top results to return
     rerank_candidates = 20  # Number of candidates to rerank with ORB
