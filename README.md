@@ -1,17 +1,18 @@
-# Image Similarity Pro (10k–100k images) — pHash + OpenCV ORB rerank
+# Image Similarity Pro — Deep Learning + aHash + ORB (3-stage pipeline)
 
-This project is optimized for large image databases by using:
+This repo searches for the most similar images in a local image database using a 3-stage ensemble:
 
-1) **Average hash (aHash)** to scan the entire database quickly (vectorized byte-wise Hamming distance). aHash is better for images with similar colors and overall structure.
-2) **OpenCV ORB** feature matching to rerank only the top candidates (fast + robust for crops/rotation).
+1) **Deep Learning (ResNet18)**: content/semantic similarity (filters candidates)
+2) **Average Hash (aHash)**: fast structural similarity (Hamming distance)
+3) **OpenCV ORB**: keypoint/geometric similarity (reranking)
 
-It returns **Top-N** results with a **pHash similarity %** and an **ORB match score**.
+It prints Top-N matches with score breakdown and shows OpenCV popups + a side-by-side comparison.
 
 ## Folder layout
 
-- `image_database/`  → put your 10k–100k images here (subfolders allowed)
-- `samples/`         → put your query images here
-- `index/`           → generated index files
+- `image_database/`  → database images (subfolders allowed)
+- `test_image/`      → query images
+- `index/`           → generated index files (rebuild locally)
 
 ## Install
 
@@ -22,39 +23,51 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Build the index (run once)
+## Build the index
 
 ```bash
-python build_index.py --db image_database --out index
+python build_index.py
 ```
 
-Creates:
+Creates/updates:
 - `index/paths.jsonl`
-- `index/hashes.npy`  (N x 128 uint8 packed bytes for 1024-bit aHash)
+- `index/hashes.npy`
+- `index/deep_features.npy`
 - `index/meta.json`
 
-## Search Top-N matches
+Note: `index/` is treated as generated output and is ignored by Git in this repo. Rebuild it locally when needed.
+
+## Search
 
 ```bash
-python search.py --query samples/sample.jpg --index index --top 10
+python search.py
 ```
 
-### With ORB reranking (recommended)
-```bash
-python search.py --query samples/sample.jpg --index index --top 10 --rerank 50
-```
+What it does:
+- Auto-checks whether the index needs rebuilding (new/deleted/renamed images).
+- Runs the 3-stage pipeline and prints results.
+- Shows:
+	- Red popup if no good match (below threshold)
+	- Green popup if match found (above threshold)
+	- Side-by-side comparison (Query | Best Match | Differences heatmap)
 
-- `--top` = number of final results
-- `--rerank` = take best K by pHash, then rerank those using ORB (0 disables)
+To change the query image and settings, edit the variables near the top of `search.py`:
+- `query_path`
+- `limit`
+- `filter_size`
 
 ## Notes on scores
 
-- **pHash similarity %** is derived from Hamming distance over 1024 bits (0 distance → 100%). Using aHash for better color-based similarity.
-- **ORB score %** is a heuristic (% of good feature matches), useful when crops/rotations happen.
+- **Deep %**: content similarity from ResNet18 features
+- **Hash %**: aHash similarity derived from Hamming distance
+- **ORB %**: keypoint matching score (may show as `n/a` for tiny/low-detail queries)
+- **Combined %**: final score used for ranking
+
+Small/low-resolution query images:
+- ORB can fail to find keypoints; in that case ORB is shown as `n/a` and the combined score falls back to Deep+Hash (so ORB does not unfairly penalize matches).
 
 ## Tips
 
-- If your database has many near-duplicates, increase `--hash-size` at index time (default 32 → 1024 bits).
-- If indexing is slow, keep `--max-side None` (default None to preserve original resolution).
-- aHash works well for images with similar colors; if frequency details matter more, switch back to pHash.
+- First run may download ResNet18 weights (internet needed unless already cached).
+- If the database changes, rerun `python build_index.py` (or run `python search.py` and let it auto-index).
 
