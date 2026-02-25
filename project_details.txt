@@ -27,7 +27,9 @@ Key scripts / modules:
 	- search.py           → main entry point to run a search (includes auto-indexing)
 	- search_engine.py    → core 3-stage search pipeline and scoring
 	- utils.py            → feature extraction + hashing + ORB utilities
+	- image_info.py       → shared image metadata helpers (file size + resolution)
 	- negative_search.py  → detects “no good match” and shows warning popup
+	- positive_search.py  → detects “good match” and shows success popup
 	- visualization.py    → side-by-side comparison + difference heatmap
 
 Data folders:
@@ -47,6 +49,7 @@ Indexing happens when you run build_index.py (or automatically from search.py).
 			- index/paths.jsonl
 			- index/hashes.npy
 			- index/deep_features.npy
+	- build_index.py creates a path→index lookup map for existing paths (O(1) reuse lookup).
 	- For each current image:
 			- If the absolute path is already in paths.jsonl → reuse stored hash + deep features.
 			- Else, compute the hash and compare to existing hashes → if identical, treat as rename and reuse features.
@@ -57,6 +60,7 @@ Indexing happens when you run build_index.py (or automatically from search.py).
 	A) Hash features (utils.phash_packed_bytes)
 		 - Uses PIL to open image and (optionally) resize.
 		 - Uses imagehash.average_hash(img, hash_size=...).
+		 - Note: function name is legacy; implementation is intentionally Average Hash (aHash).
 		 - Packs bits into uint8 bytes using np.packbits (fast Hamming comparisons).
 
 	B) Deep features (utils.extract_deep_features)
@@ -100,7 +104,10 @@ Searching is typically run via search.py.
 	- Produces orb_score_pct per candidate.
 
 3.5 Final combined score and ranking
-	- combined_score = 0.33*deep_score_pct + 0.33*phash_similarity_pct + 0.34*orb_score_pct
+	- If ORB is applicable:
+		combined_score = 0.33*deep_score_pct + 0.33*hash_similarity_pct + 0.34*orb_score_pct
+	- If ORB is NOT applicable (e.g., tiny/low-detail query image):
+		combined_score = 0.5*deep_score_pct + 0.5*hash_similarity_pct
 	- Results are sorted descending by combined_score.
 
 
@@ -129,13 +136,33 @@ What it shows:
 2) Run a search (auto-indexing + scoring + visualization):
 	 - python search.py
 
-To change the query image, edit the variables near the top of search.py:
-	- query_path
-	- limit
-	- filter_size
+3) Run with optional CLI args (defaults unchanged):
+	 - python search.py --query test_image/asha2-5R.jpg --limit 10 --filter-size 100
+	 - python search.py --index-folder index --source-folder image_database/stored_image --similarity-threshold 50
+
+You can still edit defaults in search.py, or pass the same settings via CLI args.
 
 
 7. Notes / Practical Considerations
 - The index/ folder contains large generated files (especially deep_features.npy). If you want smaller Git commits, consider ignoring index/ and rebuilding locally.
 - Deep feature extraction may download ResNet18 weights the first time (requires internet unless already cached).
+- Security note: model download keeps a legacy compatibility mode by default. Set IMG_COMPARE_VERIFY_SSL=1 to enforce SSL certificate verification.
 - OpenCV GUI windows (cv2.imshow) require a desktop session; they won’t display in headless environments.
+- Positive and negative popup modules now share image metadata helpers via image_info.py to avoid duplicated logic.
+
+
+8. Logging Style (Contributor Guideline)
+To keep runtime logs clean and consistent, use shared logging helpers from log_utils.py instead of direct print(...) for normal status output.
+
+Use these levels consistently:
+	- log_section("...") for major sections
+	- log_step("...") for pipeline stage transitions
+	- log_info("...") for neutral status messages
+	- log_ok("...") for success confirmations
+	- log_warn("...") for recoverable problems
+	- log_error("...") for failure conditions
+
+Style rules:
+	- Keep messages short and action-focused.
+	- Keep one event per line.
+	- Avoid mixed emoji/plain-text logging styles.

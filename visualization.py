@@ -6,6 +6,7 @@ Side-by-side comparison and difference display functions for the image search sy
 import os
 import cv2
 import numpy as np
+from log_utils import log_error, log_info
 
 
 def show_side_by_side_comparison(query_image_path, match_image_path, similarity_score=100.0, title="Image Comparison"):
@@ -24,7 +25,7 @@ def show_side_by_side_comparison(query_image_path, match_image_path, similarity_
     match_image = cv2.imread(match_image_path)
     
     if query_image is None or match_image is None:
-        print(f"Error: Could not load images for comparison")
+        log_error("Could not load images for comparison")
         return
 
     def _shorten_label(text: str, max_chars: int = 28) -> str:
@@ -181,17 +182,17 @@ def show_side_by_side_comparison(query_image_path, match_image_path, similarity_
         new_width = int(comparison_width * scale_factor)
         new_height = int(comparison_height * scale_factor)
         side_by_side_comparison = cv2.resize(side_by_side_comparison, (new_width, new_height))
-        print(f"Scaled comparison to fit screen: {new_width}x{new_height}")
+        log_info(f"Scaled comparison to fit screen: {new_width}x{new_height}")
     
     # Display the comparison
     cv2.imshow(title, side_by_side_comparison)
     if similarity_score < 100.0:
-        print(f"\nSide-by-side comparison with difference map displayed.")
-        print(f"Green tinted areas = Matching regions")
-        print(f"Red outlines = Different regions")
-        print(f"Heatmap: Red/Yellow = Differences, Dark = Same")
+        log_info("Side-by-side comparison with difference map displayed")
+        log_info("Green tinted areas = Matching regions")
+        log_info("Red outlines = Different regions")
+        log_info("Heatmap: Red/Yellow = Differences, Dark = Same")
     else:
-        print(f"\nPerfect match! Images are identical.")
-    print(f"Press any key to close...")
+        log_info("Perfect match: images are identical")
+    log_info("Press any key to close")
     cv2.waitKey(0)
     cv2.destroyAllWindows()

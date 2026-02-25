@@ -10,38 +10,8 @@ import os
 import cv2
 import numpy as np
 
-
-def _format_file_size(num_bytes: int) -> str:
-    if num_bytes < 0:
-        return "unknown"
-    units = ["B", "KB", "MB", "GB"]
-    size = float(num_bytes)
-    unit = units[0]
-    for u in units:
-        unit = u
-        if size < 1024.0 or u == units[-1]:
-            break
-        size /= 1024.0
-    if unit == "B":
-        return f"{int(size)} {unit}"
-    return f"{size:.1f} {unit}"
-
-
-def _get_image_info(path: str) -> tuple[str, str]:
-    """Return (size_str, resolution_str) for an image path."""
-    try:
-        size_str = _format_file_size(os.path.getsize(path)) if path and os.path.exists(path) else "missing"
-    except Exception:
-        size_str = "unknown"
-
-    try:
-        img = cv2.imread(path)
-        if img is None:
-            return size_str, "unreadable"
-        h, w = img.shape[:2]
-        return size_str, f"{w}x{h}"
-    except Exception:
-        return size_str, "unknown"
+from image_info import get_image_info
+from log_utils import log_ok
 
 
 def check_positive_search(search_results, similarity_threshold=50.0):
@@ -64,8 +34,8 @@ def check_positive_search(search_results, similarity_threshold=50.0):
 
 def display_console_success(best_similarity_score: float):
     """Display console message when a matching image is found."""
-    print(f"\n✅ MATCH FOUND ✅")
-    print(f"Best match similarity: {best_similarity_score:.1f}%")
+    log_ok("Match found")
+    log_ok(f"Best match similarity: {best_similarity_score:.1f}%")
 
 
 def show_match_popup(best_similarity_score=0.0, query_image_path="", match_image_path=""):
@@ -88,8 +58,8 @@ def show_match_popup(best_similarity_score=0.0, query_image_path="", match_image
     query_name = os.path.basename(query_image_path) if query_image_path else "(unknown)"
     match_name = os.path.basename(match_image_path) if match_image_path else "(unknown)"
 
-    query_size, query_res = _get_image_info(query_image_path)
-    match_size, match_res = _get_image_info(match_image_path)
+    query_size, query_res = get_image_info(query_image_path)
+    match_size, match_res = get_image_info(match_image_path)
 
     lines = [
         f"Best match similarity: {best_similarity_score:.1f}%",

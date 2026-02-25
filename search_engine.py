@@ -6,16 +6,14 @@ This file contains the main search function that orchestrates the 3-stage pipeli
 import os
 import json
 import numpy as np
+from log_utils import log_ok, log_step
 
 # Import utility functions for image comparison
 from utils import (
-    phash_packed_bytes,  # Extract perceptual hash from image
-    hamming_distances_packed,  # Compare hashes
+    ahash_packed_bytes,  # Extract Average Hash (aHash) from image
     dist_to_percent,  # Convert distance to percentage
     load_paths_jsonl,  # Load image paths from index
     extract_deep_features,  # Extract deep learning features
-    compare_deep_features,  # Compare deep features
-    orb_rerank,  # Rerank using keypoint matching
     orb_rerank_with_info,  # Rerank + report if ORB was applicable
     BIT_COUNT_LOOKUP_TABLE,  # Fast bit counting for hash comparison
 )
@@ -30,7 +28,7 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
         - Filters top 100 most content-similar images from database
         - Works well with different colors, angles, and lighting
     
-    STAGE 2: Perceptual Hash (33% weight for final ranking)
+    STAGE 2: Average Hash (aHash) (33% weight for final ranking)
         - Fast comparison based on image structure
         - Applied only on filtered candidates from Stage 1
     
@@ -57,7 +55,7 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
     with open(meta_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    hash_size = int(config["hash_size"])  # Size of perceptual hash
+    hash_size = int(config["hash_size"])  # Size of average hash (aHash)
     max_size = config.get("max_side", 1024)  # Image resize setting
 
     # Load all data from the index
@@ -71,7 +69,7 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
     # This stage understands WHAT is in the image (eyes, animals, objects, etc.)
     # and filters down to the most content-similar images.
     # Works even if color, angle, or lighting is different!
-    print("Stage 1: Deep learning content filtering...")
+    log_step("Stage 1: Deep learning content filtering")
     
     # Extract semantic features from query image (512 numbers representing content)
     query_features = extract_deep_features(query_image)
@@ -85,18 +83,18 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
     num_candidates = min(candidates, len(scores))
     best_indices = np.argpartition(scores, -num_candidates)[-num_candidates:]  # Find top N
     best_indices = best_indices[np.argsort(scores[best_indices])[::-1]]  # Sort by score
-    print(f"✅ Deep learning filtered: {len(best_indices)} images from {len(scores)} total")
+    log_ok(f"Deep learning filtered: {len(best_indices)} images from {len(scores)} total")
 
     # =========================================================================
-    # STAGE 2: Perceptual Hash Refinement
+    # STAGE 2: Average Hash (aHash) Refinement
     # =========================================================================
-    # Now refine the filtered candidates using perceptual hash comparison.
-    # pHash captures overall image structure and layout.
+    # Now refine the filtered candidates using average hash (aHash) comparison.
+    # aHash captures overall image structure and layout.
     # Fast and works well for finding visually similar images.
-    print(f"Stage 2: pHash refinement on {len(best_indices)} filtered candidates...")
+    log_step(f"Stage 2: aHash refinement on {len(best_indices)} filtered candidates")
     
-    # Calculate perceptual hash for the query image
-    query_hash = phash_packed_bytes(query_image, hash_size=hash_size, max_side=max_size)
+    # Calculate average hash (aHash) for the query image
+    query_hash = ahash_packed_bytes(query_image, hash_size=hash_size, max_side=max_size)
     
     # Compare query hash with each filtered candidate
     matches = []
@@ -113,8 +111,10 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
         matches.append({
             "path": image_paths[int(idx)],
             "deep_score_pct": deep_percentage,  # From Stage 1
-            "phash_distance_bits": distance,  # Raw bit difference
-            "phash_similarity_pct": dist_to_percent(distance, hash_size),  # As percentage
+            "hash_distance_bits": distance,  # Raw bit difference
+            "hash_similarity_pct": dist_to_percent(distance, hash_size),  # As percentage
+            "phash_distance_bits": distance,  # Backward-compatible alias
+            "phash_similarity_pct": dist_to_percent(distance, hash_size),  # Backward-compatible alias
         })
 
     # =========================================================================
@@ -124,7 +124,7 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
     # ORB finds distinctive points (corners, edges) and matches them.
     # Good for handling rotations, scale changes, and perspective shifts.
     if len(matches) > 0:
-        print(f"Stage 3: ORB feature matching on all {len(matches)} candidates...")
+        log_step(f"Stage 3: ORB feature matching on all {len(matches)} candidates")
         
         # Apply ORB matching to ALL candidates (not just top 50)
         # This ensures every candidate gets a proper ORB score for accurate ranking
@@ -149,16 +149,16 @@ def search(query_image: str, index_folder: str, num_results: int = 10, candidate
             for match in matches:
                 match["combined_score"] = (
                     0.33 * match["deep_score_pct"]
-                    + 0.33 * match["phash_similarity_pct"]
+                    + 0.33 * match["hash_similarity_pct"]
                     + 0.34 * float(match["orb_score_pct"] or 0.0)  # 0.34 so total = 1.0
                 )
         else:
             for match in matches:
-                match["combined_score"] = 0.5 * match["deep_score_pct"] + 0.5 * match["phash_similarity_pct"]
+                match["combined_score"] = 0.5 * match["deep_score_pct"] + 0.5 * match["hash_similarity_pct"]
 
         # Sort all results by final combined score (highest first)
         matches.sort(key=lambda m: m["combined_score"], reverse=True)
     
     # Return only the top requested number of results
-    print(f"✅ Returning top {min(num_results, len(matches))} results")
+    log_ok(f"Returning top {min(num_results, len(matches))} results")
     return matches[:num_results]

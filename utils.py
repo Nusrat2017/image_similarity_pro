@@ -63,17 +63,30 @@ def save_paths_jsonl(paths_file: str, paths: list[str]):
 # Precompute bit count for bytes 0..255 (fast Hamming distance for packed uint8 arrays)
 BIT_COUNT_LOOKUP_TABLE = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 
-def phash_packed_bytes(image_path: str, hash_size: int = 16, max_side: int | None = None) -> np.ndarray:
-    """Return packed bytes of pHash.
+def ahash_packed_bytes(image_path: str, hash_size: int = 16, max_side: int | None = None) -> np.ndarray:
+    """Return packed bytes of Average Hash (aHash).
+
+    Note:
+        The function name is legacy/compatibility naming; the implementation
+        intentionally uses `imagehash.average_hash`.
+
     Output shape: (hash_size*hash_size/8,) uint8.
     For hash_size=16 => 256 bits => 32 bytes.
     """
     img = open_image_rgb(image_path)
     img = resize_max_side(img, max_side)
-    img_hash = imagehash.average_hash(img, hash_size=hash_size)  # Average hash - works better for color images
+    img_hash = imagehash.average_hash(img, hash_size=hash_size)  # Average Hash (aHash)
     bits = np.asarray(img_hash.hash, dtype=np.uint8).reshape(-1)  # 0/1
     packed = np.packbits(bits)  # uint8
     return packed
+
+
+def phash_packed_bytes(image_path: str, hash_size: int = 16, max_side: int | None = None) -> np.ndarray:
+    """Backward-compatible alias for legacy function name.
+
+    The implementation intentionally uses Average Hash (aHash).
+    """
+    return ahash_packed_bytes(image_path, hash_size=hash_size, max_side=max_side)
 
 def hamming_distances_packed(query_hash: np.ndarray, stored_hashes: np.ndarray) -> np.ndarray:
     """Vectorized Hamming distance for packed uint8 hashes.
@@ -106,8 +119,8 @@ def orb_rerank(query_path: str, candidate_paths: list[str], max_side: int = 1024
         query_img = cv2.resize(query_img, (int(query_img.shape[1] * scale), int(query_img.shape[0] * scale)))
 
     detector = cv2.ORB_create(nfeatures=nfeatures, scaleFactor=1.2, nlevels=8, edgeThreshold=15, patchSize=31)
-    query_kp, query_desc = detector.detectAndCompute(query_img, None)
-    if query_desc is None or len(query_kp) == 0:
+    query_keypoints, query_descriptors = detector.detectAndCompute(query_img, None)
+    if query_descriptors is None or len(query_keypoints) == 0:
         return [(path, 0.0) for path in candidate_paths]
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
@@ -123,19 +136,19 @@ def orb_rerank(query_path: str, candidate_paths: list[str], max_side: int = 1024
             scale = max_side / max(candidate.shape[:2])
             candidate = cv2.resize(candidate, (int(candidate.shape[1] * scale), int(candidate.shape[0] * scale)))
 
-        kp, desc = detector.detectAndCompute(candidate, None)
-        if desc is None or len(kp) == 0:
+        candidate_keypoints, candidate_descriptors = detector.detectAndCompute(candidate, None)
+        if candidate_descriptors is None or len(candidate_keypoints) == 0:
             results.append((path, 0.0))
             continue
 
-        all_matches = matcher.knnMatch(query_desc, desc, k=2)
+        all_matches = matcher.knnMatch(query_descriptors, candidate_descriptors, k=2)
         good = []
         for pair in all_matches:
             if len(pair) == 2:
                 best, second = pair
                 if best.distance < 0.7 * second.distance:
                     good.append(best)
-        min_count = max(1, min(len(query_desc), len(desc)))
+        min_count = max(1, min(len(query_descriptors), len(candidate_descriptors)))
         score = (len(good) / min_count) * 100.0
         score = float(max(0.0, min(100.0, score)))
         results.append((path, score))
@@ -169,8 +182,8 @@ def orb_rerank_with_info(
         query_img = cv2.resize(query_img, (int(query_img.shape[1] * scale), int(query_img.shape[0] * scale)))
 
     detector = cv2.ORB_create(nfeatures=nfeatures, scaleFactor=1.2, nlevels=8, edgeThreshold=15, patchSize=31)
-    query_kp, query_desc = detector.detectAndCompute(query_img, None)
-    if query_desc is None or len(query_kp) == 0:
+    query_keypoints, query_descriptors = detector.detectAndCompute(query_img, None)
+    if query_descriptors is None or len(query_keypoints) == 0:
         return ([(path, 0.0) for path in candidate_paths], False)
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
@@ -186,19 +199,19 @@ def orb_rerank_with_info(
             scale = max_side / max(candidate.shape[:2])
             candidate = cv2.resize(candidate, (int(candidate.shape[1] * scale), int(candidate.shape[0] * scale)))
 
-        kp, desc = detector.detectAndCompute(candidate, None)
-        if desc is None or len(kp) == 0:
+        candidate_keypoints, candidate_descriptors = detector.detectAndCompute(candidate, None)
+        if candidate_descriptors is None or len(candidate_keypoints) == 0:
             results.append((path, 0.0))
             continue
 
-        all_matches = matcher.knnMatch(query_desc, desc, k=2)
+        all_matches = matcher.knnMatch(query_descriptors, candidate_descriptors, k=2)
         good = []
         for pair in all_matches:
             if len(pair) == 2:
                 best, second = pair
                 if best.distance < 0.7 * second.distance:
                     good.append(best)
-        min_count = max(1, min(len(query_desc), len(desc)))
+        min_count = max(1, min(len(query_descriptors), len(candidate_descriptors)))
         score = (len(good) / min_count) * 100.0
         score = float(max(0.0, min(100.0, score)))
         results.append((path, score))
@@ -221,9 +234,13 @@ def get_deep_learning_model():
     """Get or initialize the ResNet model for feature extraction."""
     global _deep_model, _deep_model_full, _deep_transform
     if _deep_model is None:
-        # Disable SSL verification for model download
-        import ssl
-        ssl._create_default_https_context = ssl._create_unverified_context
+        # Model download SSL behavior:
+        # - Default keeps legacy behavior (verification disabled) for compatibility.
+        # - Set IMG_COMPARE_VERIFY_SSL=1 to enforce certificate verification.
+        verify_ssl = os.getenv("IMG_COMPARE_VERIFY_SSL", "0").strip().lower() in {"1", "true", "yes"}
+        if not verify_ssl:
+            import ssl
+            ssl._create_default_https_context = ssl._create_unverified_context
         
         # Use ResNet18 pre-trained on ImageNet
         full_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
